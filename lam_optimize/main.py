@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import ase.io
 from lam_optimize.db import CrystalStructure
 from lam_optimize.relaxer import Relaxer
@@ -41,7 +42,9 @@ def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, tr
     print("\nStart to relax structures.\n")
     relax_results = {}
     cifs = fpth.rglob("*.cif")
+    count = 0
     for cif in tqdm(cifs, desc="Relaxing"):
+        print(f"\nRelaxing {cif}... \n")
         fn = str(cif).split("/")[-1].split(".")[0]
         try:
             structure = Structure.from_file(cif)
@@ -70,8 +73,15 @@ def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, tr
                     signal.alarm(0)
         else:
             pass
+        count += 1
+        if count % 200 == 0:
+            df_out = pd.DataFrame(relax_results).T
+            df_out.to_feather(f"save.{str(count)}.feather")
     df_out = pd.DataFrame(relax_results).T
+    df_out.to_feather("save.feather")
     print("\nSaved to df.\n")
+    return df_out
+
 
     atoms_list = []
     for i in df_out.index:
