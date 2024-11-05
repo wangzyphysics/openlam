@@ -6,7 +6,7 @@ import sys
 import ase.io
 from lam_optimize.db import CrystalStructure
 from lam_optimize.relaxer import Relaxer
-from lam_optimize.utils import get_e_form_per_atom, MATCHER
+from lam_optimize.utils import get_e_form_per_atom, validate_cif, MATCHER
 import logging
 import numpy as np
 import pandas as pd
@@ -16,13 +16,14 @@ from pymatgen.io.ase import AseAtomsAdaptor
 from tqdm import tqdm
 import os
 import signal
+import traceback
 
 
 def sigalrm_handler(signum, frame):
     raise TimeoutError("Timeout to relax")
 
 
-def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, traj_file: Path=None, timeout: int=None, check_convergence: bool=True, check_duplicate: bool=True):
+def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, traj_file: Path=None, timeout: int=None, check_convergence: bool=True, check_duplicate: bool=False, validate: bool=True):
     """
     This is the main relaxation function
 
@@ -64,6 +65,7 @@ def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, tr
                 relax_results[fn] = {
                     f"final_structure": result["final_structure"],
                     "final_energy": result["trajectory"].energies[-1],
+                    "initial_structure": structure.as_dict(),
                 }
 
             except Exception as exc:
@@ -88,17 +90,24 @@ def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, tr
         atoms = AseAtomsAdaptor.get_atoms(Structure.from_dict(df_out.loc[i, "final_structure"]))
         atoms_list.append(atoms)
 
+    os.makedirs("unconverged", exist_ok=True)
     if check_convergence:
         new_atoms_list = []
-        for atoms in atoms_list:
+        unconverged = []
+        for i, atoms in enumerate(atoms_list):
             atoms.calc = relaxer.calculator
             if get_e_form_per_atom(atoms, atoms.get_potential_energy()) > 0:
                 logging.warn("%s: energy not relaxed" % atoms.symbols)
+                unconverged.append(Structure.from_dict(df_out.loc[df_out.index[i], "initial_structure"]))
             elif np.max(abs(atoms.get_forces())) > 0.05:
                 logging.warn("%s: forces not relaxed" % atoms.symbols)
+                unconverged.append(Structure.from_dict(df_out.loc[df_out.index[i], "initial_structure"]))
             else:
                 new_atoms_list.append(atoms)
         atoms_list = new_atoms_list
+        for structure in unconverged:
+            atoms = AseAtomsAdaptor.get_atoms(structure)
+            ase.io.write(f"unconverged/initial-{atoms.symbols}.cif", atoms, format='cif')
 
     if check_duplicate:
         new_atoms_list = []
@@ -124,7 +133,14 @@ def relax_run(fpth: Path, relaxer: Relaxer, fmax: float=1e-4, steps: int=200, tr
 
     os.makedirs("relaxed", exist_ok=True)
     for atoms in atoms_list:
-        ase.io.write(f"relaxed/final-{atoms.symbols}.cif", atoms, format='cif')
+        cif_file = f"relaxed/final-{atoms.symbols}.cif"
+        ase.io.write(cif_file, atoms, format='cif')
+        if validate:
+            try:
+                validate_cif(cif_file)
+            except Exception:
+                traceback.print_exc()
+                os.remove(cif_file)
 
     return df_out
 
